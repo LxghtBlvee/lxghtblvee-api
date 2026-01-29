@@ -35,6 +35,49 @@ export default {
         return text("ok");
       }
 
+      // ================= Discord Status API =================
+      // Public: returns KV status if available; else env fallback
+      if (path === "/api/discord/status") {
+        const status = await readDiscordStatus(env);
+        return json(status, 200, 0);
+      }
+
+      // Public: explicitly KV read (useful for debugging)
+      if (path === "/api/discord/status-kv") {
+        if (!env.STATUS_KV) return json({ error: "KV not configured" }, 500, 0);
+        const status = await readDiscordStatusFromKV(env);
+        return json(status, 200, 0);
+      }
+
+      // Protected: update status (writes to KV)
+      if (path === "/api/discord/status/update" && request.method === "POST") {
+        const auth =
+          request.headers.get("Authorization") ||
+          request.headers.get("authorization") ||
+          "";
+
+        if (!env.ADMIN_TOKEN) return json({ error: "ADMIN_TOKEN not set" }, 500, 0);
+        if (auth !== `Bearer ${env.ADMIN_TOKEN}`) return json({ error: "Unauthorized" }, 401, 0);
+        if (!env.STATUS_KV) return json({ error: "KV not configured" }, 500, 0);
+
+        const body = await request.json().catch(() => ({}));
+
+        const workingOn =
+          typeof body.workingOn === "string" && body.workingOn.trim().length
+            ? body.workingOn.trim()
+            : null;
+
+        const state =
+          typeof body.state === "string" && body.state.trim().length
+            ? body.state.trim()
+            : null;
+
+        const updated = await writeDiscordStatusToKV(env, { workingOn, state });
+
+        return json({ ok: true, status: updated }, 200, 0);
+      }
+      // =======================================================
+
       // Debug: env presence (does NOT expose secret values)
       if (path === "/debug/env") {
         return json(
@@ -43,6 +86,8 @@ export default {
             lastfmUser: env.LASTFM_USER || null,
             robloxUserId: env.ROBLOX_USER_ID || null,
             githubUser: env.GITHUB_USER || null,
+            hasAdminToken: !!env.ADMIN_TOKEN,
+            hasStatusKV: !!env.STATUS_KV,
           },
           200,
           0,
@@ -148,8 +193,8 @@ export default {
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,HEAD,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
   };
 }
 
@@ -184,6 +229,48 @@ async function handleCached(request, ctx, seconds, producer) {
   return res;
 }
 
+// ---------------- Discord Status (KV) ----------------
+async function readDiscordStatus(env) {
+  // Prefer KV if configured
+  if (env.STATUS_KV) return readDiscordStatusFromKV(env);
+
+  // Fallback: env defaults (static)
+  return {
+    workingOn: env.WORKING_ON || "Chilling 😴",
+    state: env.STATE || "idle", // idle | coding | deploying | offline
+    updatedAt: env.UPDATED_AT || new Date().toISOString(),
+  };
+}
+
+async function readDiscordStatusFromKV(env) {
+  const raw = await env.STATUS_KV.get("status");
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // ignore corrupted KV
+    }
+  }
+  return {
+    workingOn: "Chilling 😴",
+    state: "idle",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function writeDiscordStatusToKV(env, patch) {
+  const current = await readDiscordStatusFromKV(env);
+
+  const next = {
+    workingOn: patch.workingOn ?? current.workingOn ?? "Chilling 😴",
+    state: patch.state ?? current.state ?? "idle",
+    updatedAt: new Date().toISOString(),
+  };
+
+  await env.STATUS_KV.put("status", JSON.stringify(next));
+  return next;
+}
+
 // ---------------- Last.fm ----------------
 async function debugLastfm(env) {
   try {
@@ -216,7 +303,6 @@ async function getNowPlaying(env) {
   const apiKey = env.LASTFM_API_KEY;
   const username = env.LASTFM_USER || "LxghtBlvee";
 
-  // If this is missing, you'll get empty now-playing exactly like you're seeing.
   if (!apiKey) {
     return { nowPlaying: false, title: "", artist: "", albumArt: "", url: "", durationMs: 0, trackKey: "" };
   }
@@ -244,7 +330,6 @@ async function getNowPlaying(env) {
 
   const trackKey = title && artist ? `${artist} — ${title}` : "";
 
-  // duration (best-effort)
   let durationMs = 0;
   if (title && artist) {
     try {
@@ -293,7 +378,7 @@ async function getRoblox(env) {
     if (p) {
       presenceType = Number(p.userPresenceType ?? 0);
       lastLocation = p.lastLocation || "";
-      placeId = p.placeId ?? null; // Roblox sometimes returns null even when in-game (privacy/limitations)
+      placeId = p.placeId ?? null;
     }
   } catch {}
 
@@ -311,7 +396,6 @@ async function getRoblox(env) {
   const profileUrl = `https://www.roblox.com/users/${userId}/profile`;
   const gameUrl = placeId ? `https://www.roblox.com/games/${placeId}` : null;
 
-  // game icon (only if we have placeId)
   let gameIcon = "";
   if (placeId) {
     try {
