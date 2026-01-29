@@ -43,6 +43,26 @@ export default {
       return handleCached(request, ctx, 30, () => getGitHub(env));
     }
 
+    // DEBUG: env check
+if (path === "/debug/env") {
+  return json(
+    {
+      hasLastfmKey: !!env.LASTFM_API_KEY,
+      lastfmUser: env.LASTFM_USER || null,
+      robloxUserId: env.ROBLOX_USER_ID || null,
+      githubUser: env.GITHUB_USER || null,
+    },
+    200,
+    0,
+  );
+}
+
+// DEBUG: lastfm raw response
+if (path === "/debug/lastfm") {
+  return json(await debugLastfm(env), 200, 0);
+}
+
+
     if (path === "/feed") {
       return handleCached(request, ctx, 5, async () => {
         const [np, rbx, gh] = await Promise.all([
@@ -305,6 +325,30 @@ async function getGitHub(env) {
         ts: Date.parse(e?.created_at) || Date.now(),
       };
     });
+async function debugLastfm(env) {
+  const apiKey = env.LASTFM_API_KEY;
+  const username = env.LASTFM_USER || "LxghtBlvee";
+
+  if (!apiKey) {
+    return { ok: false, reason: "MISSING_LASTFM_API_KEY", username };
+  }
+
+  const recentUrl =
+    `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks` +
+    `&user=${encodeURIComponent(username)}` +
+    `&api_key=${encodeURIComponent(apiKey)}` +
+    `&format=json&limit=1`;
+
+  const res = await fetch(recentUrl);
+  const text = await res.text();
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    username,
+    sample: text.slice(0, 800),
+  };
+}
 
   return { items };
 }
