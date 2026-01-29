@@ -226,7 +226,10 @@ async function getGitHub(env) {
         title,
         subtitle,
         url: repo ? `https://github.com/${repo}` : `https://github.com/${user}`,
-        image: "",
+        image:
+        type === "PushEvent"
+         ? "https://cdn-icons-png.flaticon.com/512/25/25231.png"
+         : "https://cdn-icons-png.flaticon.com/512/5968/5968866.png",
         ts: Date.parse(e?.created_at) || Date.now(),
       };
     });
