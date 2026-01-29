@@ -38,7 +38,7 @@ export default {
     }
 
     if (path === "/roblox") {
-      return handleCached(request, ctx, 30, () => getRoblox(env));
+      return handleCached(request, ctx, 5, () => getRoblox(env));
     }
 
     if (path === "/github") {
@@ -56,26 +56,31 @@ export default {
         const items = [];
 
         if (np?.title) {
-          items.push({
-            type: np.nowPlaying ? "music_now" : "music_last",
-            title: np.nowPlaying ? `Listening: ${np.title}` : `Last played: ${np.title}`,
-            subtitle: np.artist || "",
-            url: np.url || "",
-            image: np.albumArt || "",
-            ts: Date.now(),
-          });
-        }
+  items.push({
+    type: np.nowPlaying ? "music_now" : "music_last",
+    title: np.nowPlaying ? `Listening: ${np.title}` : `Last played: ${np.title}`,
+    subtitle: np.artist || "",
+    url: np.url || "",
+    image: np.albumArt || "",
+    ts: Date.now(),
+    durationMs: np.durationMs || 0,
+    trackKey: np.trackKey || "",
+  });
+}
+
 
         if (rbx?.name) {
-          items.push({
-            type: "roblox",
-            title: rbx.isOnline ? `Roblox: Online` : `Roblox: Offline`,
-            subtitle: `${rbx.displayName} (@${rbx.name})`,
-            url: rbx.profileUrl,
-            image: rbx.avatar,
-            ts: Date.now(),
-          });
-        }
+  items.push({
+    type: "roblox",
+    title: rbx.title || (rbx.isOnline ? "Roblox: Online" : "Roblox: Offline"),
+    subtitle: rbx.subtitle || `${rbx.displayName} (@${rbx.name})`,
+    url: rbx.gameUrl || rbx.profileUrl,   // 👈 if in game, link to game; otherwise profile
+    image: rbx.avatar,
+    ts: Date.now(),
+    placeId: rbx.placeId || null,
+    lastLocation: rbx.lastLocation || "",
+  });
+}
 
         if (gh?.items?.length) {
           for (const it of gh.items.slice(0, 3)) {
@@ -84,10 +89,10 @@ export default {
         }
 
         const presence = {
-          music: np?.nowPlaying ? "listening" : "idle",
-          roblox: rbx?.isOnline ? "online" : "offline",
-          updatedAt: Date.now(),
-        };
+  music: np?.nowPlaying ? "listening" : "idle",
+  roblox: rbx?.isOnline ? (rbx?.presenceType === 2 ? "in_game" : "online") : "offline",
+  updatedAt: Date.now(),
+};
 
         return { presence, items };
       });
@@ -138,23 +143,28 @@ async function handleCached(request, ctx, seconds, producer) {
   return res;
 }
 
-//  Now Playing (Last.fm) 
+// ---------- Now Playing (Last.fm) ----------
 async function getNowPlaying(env) {
   const apiKey = env.LASTFM_API_KEY;
   const username = env.LASTFM_USER || "LxghtBlvee";
 
-  if (!apiKey) return { nowPlaying: false, title: "", artist: "", albumArt: "", url: "" };
+  if (!apiKey) {
+    return { nowPlaying: false, title: "", artist: "", albumArt: "", url: "", durationMs: 0, trackKey: "" };
+  }
 
-  const apiUrl =
+  const recentUrl =
     `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks` +
     `&user=${encodeURIComponent(username)}` +
     `&api_key=${encodeURIComponent(apiKey)}` +
     `&format=json&limit=1`;
 
-  const res = await fetch(apiUrl);
+  const res = await fetch(recentUrl);
   const data = await res.json();
 
   const track = data?.recenttracks?.track?.[0];
+  const title = track?.name || "";
+  const artist = track?.artist?.["#text"] || "";
+
   const images = track?.image || [];
   const albumArt =
     images.find((i) => i.size === "extralarge")?.["#text"] ||
@@ -162,34 +172,84 @@ async function getNowPlaying(env) {
     images.find((i) => i.size === "medium")?.["#text"] ||
     "";
 
+  const nowPlaying = track?.["@attr"]?.nowplaying === "true";
+  const url = track?.url || "";
+  const trackKey = title && artist ? `${artist} — ${title}` : "";
+
+  let durationMs = 0;
+  if (title && artist) {
+    try {
+      const infoUrl =
+        `https://ws.audioscrobbler.com/2.0/?method=track.getInfo` +
+        `&api_key=${encodeURIComponent(apiKey)}` +
+        `&artist=${encodeURIComponent(artist)}` +
+        `&track=${encodeURIComponent(title)}` +
+        `&autocorrect=1&format=json`;
+
+      const info = await fetch(infoUrl).then((r) => r.json());
+      const d = Number(info?.track?.duration || 0);
+      if (Number.isFinite(d) && d > 0) durationMs = d;
+    } catch {
+      durationMs = 0;
+    }
+  }
+
   return {
-    nowPlaying: track?.["@attr"]?.nowplaying === "true",
-    title: track?.name || "",
-    artist: track?.artist?.["#text"] || "",
+    nowPlaying,
+    title,
+    artist,
     albumArt,
-    url: track?.url || "",
+    url,
+    durationMs,
+    trackKey,
   };
 }
 
-//  Roblox 
+// ---------- Roblox ----------
 async function getRoblox(env) {
   const userId = env.ROBLOX_USER_ID || "9519944913";
 
   const u = await fetch(`https://users.roblox.com/v1/users/${userId}`).then((r) => r.json());
 
   const thumb = await fetch(
-    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=true`
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=true`,
   ).then((r) => r.json());
 
   const avatar = thumb?.data?.[0]?.imageUrl || "";
 
-  let isOnline = false;
+  let presenceType = 0; 
+  let lastLocation = "";
+  let placeId = null;
+
   try {
-    const online = await fetch(`https://api.roblox.com/users/${userId}/onlinestatus/`).then((r) => r.json());
-    isOnline = !!online?.IsOnline;
+    const pres = await fetch(`https://presence.roblox.com/v1/presence/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userIds: [Number(userId)] }),
+    }).then((r) => r.json());
+
+    const p = pres?.userPresences?.[0];
+    if (p) {
+      presenceType = Number(p.userPresenceType ?? 0);
+      lastLocation = p.lastLocation || "";
+      placeId = p.placeId ?? null;
+    }
   } catch {
-    isOnline = false;
+    presenceType = 0;
   }
+
+  const isOnline = presenceType === 1 || presenceType === 2 || presenceType === 3;
+
+  const gameUrl = placeId ? `https://www.roblox.com/games/${placeId}` : null;
+
+  let title = "Roblox: Offline";
+  if (presenceType === 1) title = "Roblox: Online";
+  if (presenceType === 2) title = "Roblox: In game";
+  if (presenceType === 3) title = "Roblox: In Studio";
+
+  const subtitle = lastLocation
+    ? `${u?.displayName || u?.name || "Unknown"} (@${u?.name || "Unknown"}) • ${lastLocation}`
+    : `${u?.displayName || u?.name || "Unknown"} (@${u?.name || "Unknown"})`;
 
   return {
     userId,
@@ -197,9 +257,16 @@ async function getRoblox(env) {
     displayName: u?.displayName || u?.name || "Unknown",
     avatar,
     isOnline,
+    presenceType,
+    lastLocation,
+    placeId,
     profileUrl: `https://www.roblox.com/users/${userId}/profile`,
+    gameUrl,
+    title,
+    subtitle,
   };
 }
+
 
 // github
 async function getGitHub(env) {
