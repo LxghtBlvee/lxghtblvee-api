@@ -11,7 +11,6 @@ export default {
         ? url.pathname.slice(0, -1)
         : url.pathname;
 
-    //  Basic rate limit (best-effort) 
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     const now = Date.now();
     globalThis.__rl ??= new Map();
@@ -28,7 +27,6 @@ export default {
       return json({ error: "Rate limited" }, 429, 1);
     }
 
-    //  Routing 
     if (path === "/" || path === "/health") {
       return text("ok");
     }
@@ -74,8 +72,8 @@ export default {
     type: "roblox",
     title: rbx.title || (rbx.isOnline ? "Roblox: Online" : "Roblox: Offline"),
     subtitle: rbx.subtitle || `${rbx.displayName} (@${rbx.name})`,
-    url: rbx.gameUrl || rbx.profileUrl,   // 👈 if in game, link to game; otherwise profile
-    image: rbx.avatar,
+    url: rbx.gameUrl || rbx.profileUrl,  
+    image: rbx.gameIcon || rbx.avatar,
     ts: Date.now(),
     placeId: rbx.placeId || null,
     lastLocation: rbx.lastLocation || "",
@@ -102,7 +100,6 @@ export default {
   },
 };
 
-//  Response helpers 
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -143,7 +140,6 @@ async function handleCached(request, ctx, seconds, producer) {
   return res;
 }
 
-// ---------- Now Playing (Last.fm) ----------
 async function getNowPlaying(env) {
   const apiKey = env.LASTFM_API_KEY;
   const username = env.LASTFM_USER || "LxghtBlvee";
@@ -205,7 +201,6 @@ async function getNowPlaying(env) {
   };
 }
 
-// ---------- Roblox ----------
 async function getRoblox(env) {
   const userId = env.ROBLOX_USER_ID || "9519944913";
 
@@ -217,7 +212,7 @@ async function getRoblox(env) {
 
   const avatar = thumb?.data?.[0]?.imageUrl || "";
 
-  let presenceType = 0; 
+  let presenceType = 0;
   let lastLocation = "";
   let placeId = null;
 
@@ -234,13 +229,23 @@ async function getRoblox(env) {
       lastLocation = p.lastLocation || "";
       placeId = p.placeId ?? null;
     }
-  } catch {
-    presenceType = 0;
-  }
+  } catch {}
 
   const isOnline = presenceType === 1 || presenceType === 2 || presenceType === 3;
 
   const gameUrl = placeId ? `https://www.roblox.com/games/${placeId}` : null;
+
+
+  let gameIcon = "";
+  if (placeId) {
+    try {
+      const icon = await fetch(
+        `https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png`,
+      ).then((r) => r.json());
+
+      gameIcon = icon?.data?.[0]?.imageUrl || "";
+    } catch {}
+  }
 
   let title = "Roblox: Offline";
   if (presenceType === 1) title = "Roblox: Online";
@@ -262,13 +267,13 @@ async function getRoblox(env) {
     placeId,
     profileUrl: `https://www.roblox.com/users/${userId}/profile`,
     gameUrl,
+    gameIcon,
     title,
     subtitle,
   };
 }
 
 
-// github
 async function getGitHub(env) {
   const user = env.GITHUB_USER || "LxghtBlvee";
 
