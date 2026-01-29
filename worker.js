@@ -14,7 +14,7 @@ export default {
           ? url.pathname.slice(0, -1)
           : url.pathname;
 
-      // Soft rate limit (per instance)
+      // Soft rate limit 
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
       const now = Date.now();
       globalThis.__rl ??= new Map();
@@ -35,8 +35,7 @@ export default {
         return text("ok");
       }
 
-      // ================= Discord Status API =================
-      // Public: returns KV status if available; else env fallback
+      //  Discord Status API 
       if (path === "/api/discord/status") {
         const status = await readDiscordStatus(env);
         return json(status, 200, 0);
@@ -76,9 +75,8 @@ export default {
 
         return json({ ok: true, status: updated }, 200, 0);
       }
-      // =======================================================
 
-      // Debug: env presence (does NOT expose secret values)
+      // Debug
       if (path === "/debug/env") {
         return json(
           {
@@ -175,7 +173,6 @@ export default {
 
       return json({ error: "Not found", path }, 404, 1);
     } catch (err) {
-      // Prevent Error 1101 forever
       return json(
         {
           error: "Worker threw",
@@ -189,7 +186,7 @@ export default {
   },
 };
 
-// ---------------- Helpers ----------------
+//  Helpers 
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -229,15 +226,13 @@ async function handleCached(request, ctx, seconds, producer) {
   return res;
 }
 
-// ---------------- Discord Status (KV) ----------------
+//  Discord Status (KV) 
 async function readDiscordStatus(env) {
-  // Prefer KV if configured
   if (env.STATUS_KV) return readDiscordStatusFromKV(env);
 
-  // Fallback: env defaults (static)
   return {
     workingOn: env.WORKING_ON || "Chilling 😴",
-    state: env.STATE || "idle", // idle | coding | deploying | offline
+    state: env.STATE || "idle", 
     updatedAt: env.UPDATED_AT || new Date().toISOString(),
   };
 }
@@ -271,7 +266,7 @@ async function writeDiscordStatusToKV(env, patch) {
   return next;
 }
 
-// ---------------- Last.fm ----------------
+//  Last.fm 
 async function debugLastfm(env) {
   try {
     const apiKey = env.LASTFM_API_KEY;
