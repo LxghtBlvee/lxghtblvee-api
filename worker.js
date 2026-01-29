@@ -1,125 +1,150 @@
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+    try {
+      const url = new URL(request.url);
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders() });
-    }
+      // CORS preflight
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders() });
+      }
 
-    const path =
-      url.pathname.endsWith("/") && url.pathname !== "/"
-        ? url.pathname.slice(0, -1)
-        : url.pathname;
+      // Normalize trailing slash
+      const path =
+        url.pathname.endsWith("/") && url.pathname !== "/"
+          ? url.pathname.slice(0, -1)
+          : url.pathname;
 
-    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-    const now = Date.now();
-    globalThis.__rl ??= new Map();
-    const bucket = globalThis.__rl.get(ip) || { count: 0, reset: now + 10_000 };
+      // Soft rate limit (per instance)
+      const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+      const now = Date.now();
+      globalThis.__rl ??= new Map();
+      const bucket = globalThis.__rl.get(ip) || { count: 0, reset: now + 10_000 };
+      if (now > bucket.reset) {
+        bucket.count = 0;
+        bucket.reset = now + 10_000;
+      }
+      bucket.count++;
+      globalThis.__rl.set(ip, bucket);
 
-    if (now > bucket.reset) {
-      bucket.count = 0;
-      bucket.reset = now + 10_000;
-    }
-    bucket.count++;
-    globalThis.__rl.set(ip, bucket);
+      if (bucket.count > 60) {
+        return json({ error: "Rate limited" }, 429, 1);
+      }
 
-    if (bucket.count > 40) {
-      return json({ error: "Rate limited" }, 429, 1);
-    }
+      // Health
+      if (path === "/" || path === "/health") {
+        return text("ok");
+      }
 
-    if (path === "/" || path === "/health") {
-      return text("ok");
-    }
+      // Debug: env presence (does NOT expose secret values)
+      if (path === "/debug/env") {
+        return json(
+          {
+            hasLastfmKey: !!env.LASTFM_API_KEY,
+            lastfmUser: env.LASTFM_USER || null,
+            robloxUserId: env.ROBLOX_USER_ID || null,
+            githubUser: env.GITHUB_USER || null,
+          },
+          200,
+          0,
+        );
+      }
 
-    if (path === "/now-playing") {
-      return handleCached(request, ctx, 5, () => getNowPlaying(env));
-    }
+      // Debug: lastfm raw call
+      if (path === "/debug/lastfm") {
+        const out = await debugLastfm(env);
+        return json(out, 200, 0);
+      }
 
-    if (path === "/roblox") {
-      return handleCached(request, ctx, 5, () => getRoblox(env));
-    }
+      // Routes
+      if (path === "/now-playing") {
+        return handleCached(request, ctx, 5, () => getNowPlaying(env));
+      }
 
-    if (path === "/github") {
-      return handleCached(request, ctx, 30, () => getGitHub(env));
-    }
+      if (path === "/roblox") {
+        return handleCached(request, ctx, 10, () => getRoblox(env));
+      }
 
-    // DEBUG: env check
-if (path === "/debug/env") {
-  return json(
-    {
-      hasLastfmKey: !!env.LASTFM_API_KEY,
-      lastfmUser: env.LASTFM_USER || null,
-      robloxUserId: env.ROBLOX_USER_ID || null,
-      githubUser: env.GITHUB_USER || null,
-    },
-    200,
-    0,
-  );
-}
+      if (path === "/github") {
+        return handleCached(request, ctx, 30, () => getGitHub(env));
+      }
 
-// DEBUG: lastfm raw response
-if (path === "/debug/lastfm") {
-  return json(await debugLastfm(env), 200, 0);
-}
+      if (path === "/feed") {
+        return handleCached(request, ctx, 5, async () => {
+          const [np, rbx, gh] = await Promise.all([
+            getNowPlaying(env).catch((e) => ({ _error: String(e) })),
+            getRoblox(env).catch((e) => ({ _error: String(e) })),
+            getGitHub(env).catch((e) => ({ items: [], _error: String(e) })),
+          ]);
 
+          const items = [];
 
-    if (path === "/feed") {
-      return handleCached(request, ctx, 5, async () => {
-        const [np, rbx, gh] = await Promise.all([
-          getNowPlaying(env).catch(() => null),
-          getRoblox(env).catch(() => null),
-          getGitHub(env).catch(() => null),
-        ]);
-
-        const items = [];
-
-        if (np?.title) {
-  items.push({
-    type: np.nowPlaying ? "music_now" : "music_last",
-    title: np.nowPlaying ? `Listening: ${np.title}` : `Last played: ${np.title}`,
-    subtitle: np.artist || "",
-    url: np.url || "",
-    image: np.albumArt || "",
-    ts: Date.now(),
-    durationMs: np.durationMs || 0,
-    trackKey: np.trackKey || "",
-  });
-}
-
-
-        if (rbx?.name) {
-  items.push({
-    type: "roblox",
-    title: rbx.title || (rbx.isOnline ? "Roblox: Online" : "Roblox: Offline"),
-    subtitle: rbx.subtitle || `${rbx.displayName} (@${rbx.name})`,
-    url: rbx.gameUrl || rbx.profileUrl,  
-    image: rbx.gameIcon || rbx.avatar,
-    ts: Date.now(),
-    placeId: rbx.placeId || null,
-    lastLocation: rbx.lastLocation || "",
-  });
-}
-
-        if (gh?.items?.length) {
-          for (const it of gh.items.slice(0, 3)) {
-            items.push({ ...it, ts: it.ts || Date.now() });
+          // Music
+          if (np?.title) {
+            items.push({
+              type: np.nowPlaying ? "music_now" : "music_last",
+              title: np.nowPlaying ? `Listening: ${np.title}` : `Last played: ${np.title}`,
+              subtitle: np.artist || "",
+              url: np.url || "",
+              image: np.albumArt || "",
+              durationMs: np.durationMs || 0,
+              trackKey: np.trackKey || "",
+              ts: Date.now(),
+            });
           }
-        }
 
-        const presence = {
-  music: np?.nowPlaying ? "listening" : "idle",
-  roblox: rbx?.isOnline ? (rbx?.presenceType === 2 ? "in_game" : "online") : "offline",
-  updatedAt: Date.now(),
-};
+          // Roblox
+          if (rbx?.name) {
+            items.push({
+              type: "roblox",
+              title: rbx.title || (rbx.isOnline ? "Roblox: Online" : "Roblox: Offline"),
+              subtitle: rbx.subtitle || `${rbx.displayName} (@${rbx.name})`,
+              url: rbx.gameUrl || rbx.profileUrl,
+              image: rbx.gameIcon || rbx.avatar || "",
+              ts: Date.now(),
+              presenceType: rbx.presenceType ?? 0,
+              lastLocation: rbx.lastLocation || "",
+              placeId: rbx.placeId ?? null,
+            });
+          }
 
-        return { presence, items };
-      });
+          // GitHub
+          if (gh?.items?.length) {
+            for (const it of gh.items.slice(0, 3)) items.push({ ...it, ts: it.ts || Date.now() });
+          }
+
+          // Presence summary
+          const presence = {
+            music: np?.nowPlaying ? "listening" : "idle",
+            roblox:
+              rbx?.presenceType === 2
+                ? "in_game"
+                : rbx?.isOnline
+                  ? "online"
+                  : "offline",
+            updatedAt: Date.now(),
+          };
+
+          return { presence, items, _debug: { np: np?._error || null, rbx: rbx?._error || null } };
+        });
+      }
+
+      return json({ error: "Not found", path }, 404, 1);
+    } catch (err) {
+      // Prevent Error 1101 forever
+      return json(
+        {
+          error: "Worker threw",
+          message: err?.message || String(err),
+          stack: (err?.stack || "").split("\n").slice(0, 6).join("\n"),
+        },
+        500,
+        0,
+      );
     }
-
-    return json({ error: "Not found", path }, 404, 1);
   },
 };
 
+// ---------------- Helpers ----------------
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -155,15 +180,43 @@ async function handleCached(request, ctx, seconds, producer) {
 
   const data = await producer();
   const res = json(data, 200, seconds);
-
   ctx.waitUntil(cache.put(cacheKey, res.clone()));
   return res;
+}
+
+// ---------------- Last.fm ----------------
+async function debugLastfm(env) {
+  try {
+    const apiKey = env.LASTFM_API_KEY;
+    const username = env.LASTFM_USER || "LxghtBlvee";
+
+    if (!apiKey) return { ok: false, reason: "MISSING_LASTFM_API_KEY", username };
+
+    const recentUrl =
+      `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks` +
+      `&user=${encodeURIComponent(username)}` +
+      `&api_key=${encodeURIComponent(apiKey)}` +
+      `&format=json&limit=1`;
+
+    const res = await fetch(recentUrl);
+    const text = await res.text();
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      username,
+      sample: text.slice(0, 1000),
+    };
+  } catch (e) {
+    return { ok: false, reason: "EXCEPTION", message: e?.message || String(e) };
+  }
 }
 
 async function getNowPlaying(env) {
   const apiKey = env.LASTFM_API_KEY;
   const username = env.LASTFM_USER || "LxghtBlvee";
 
+  // If this is missing, you'll get empty now-playing exactly like you're seeing.
   if (!apiKey) {
     return { nowPlaying: false, title: "", artist: "", albumArt: "", url: "", durationMs: 0, trackKey: "" };
   }
@@ -174,12 +227,13 @@ async function getNowPlaying(env) {
     `&api_key=${encodeURIComponent(apiKey)}` +
     `&format=json&limit=1`;
 
-  const res = await fetch(recentUrl);
-  const data = await res.json();
-
+  const data = await fetch(recentUrl).then((r) => r.json());
   const track = data?.recenttracks?.track?.[0];
+
   const title = track?.name || "";
   const artist = track?.artist?.["#text"] || "";
+  const nowPlaying = track?.["@attr"]?.nowplaying === "true";
+  const url = track?.url || "";
 
   const images = track?.image || [];
   const albumArt =
@@ -188,10 +242,9 @@ async function getNowPlaying(env) {
     images.find((i) => i.size === "medium")?.["#text"] ||
     "";
 
-  const nowPlaying = track?.["@attr"]?.nowplaying === "true";
-  const url = track?.url || "";
   const trackKey = title && artist ? `${artist} — ${title}` : "";
 
+  // duration (best-effort)
   let durationMs = 0;
   if (title && artist) {
     try {
@@ -210,17 +263,10 @@ async function getNowPlaying(env) {
     }
   }
 
-  return {
-    nowPlaying,
-    title,
-    artist,
-    albumArt,
-    url,
-    durationMs,
-    trackKey,
-  };
+  return { nowPlaying, title, artist, albumArt, url, durationMs, trackKey };
 }
 
+// ---------------- Roblox ----------------
 async function getRoblox(env) {
   const userId = env.ROBLOX_USER_ID || "9519944913";
 
@@ -247,25 +293,11 @@ async function getRoblox(env) {
     if (p) {
       presenceType = Number(p.userPresenceType ?? 0);
       lastLocation = p.lastLocation || "";
-      placeId = p.placeId ?? null;
+      placeId = p.placeId ?? null; // Roblox sometimes returns null even when in-game (privacy/limitations)
     }
   } catch {}
 
   const isOnline = presenceType === 1 || presenceType === 2 || presenceType === 3;
-
-  const gameUrl = placeId ? `https://www.roblox.com/games/${placeId}` : null;
-
-
-  let gameIcon = "";
-  if (placeId) {
-    try {
-      const icon = await fetch(
-        `https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png`,
-      ).then((r) => r.json());
-
-      gameIcon = icon?.data?.[0]?.imageUrl || "";
-    } catch {}
-  }
 
   let title = "Roblox: Offline";
   if (presenceType === 1) title = "Roblox: Online";
@@ -276,6 +308,22 @@ async function getRoblox(env) {
     ? `${u?.displayName || u?.name || "Unknown"} (@${u?.name || "Unknown"}) • ${lastLocation}`
     : `${u?.displayName || u?.name || "Unknown"} (@${u?.name || "Unknown"})`;
 
+  const profileUrl = `https://www.roblox.com/users/${userId}/profile`;
+  const gameUrl = placeId ? `https://www.roblox.com/games/${placeId}` : null;
+
+  // game icon (only if we have placeId)
+  let gameIcon = "";
+  if (placeId) {
+    try {
+      const icon = await fetch(
+        `https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png`,
+      ).then((r) => r.json());
+      gameIcon = icon?.data?.[0]?.imageUrl || "";
+    } catch {
+      gameIcon = "";
+    }
+  }
+
   return {
     userId,
     name: u?.name || "Unknown",
@@ -285,7 +333,7 @@ async function getRoblox(env) {
     presenceType,
     lastLocation,
     placeId,
-    profileUrl: `https://www.roblox.com/users/${userId}/profile`,
+    profileUrl,
     gameUrl,
     gameIcon,
     title,
@@ -293,7 +341,7 @@ async function getRoblox(env) {
   };
 }
 
-
+// ---------------- GitHub ----------------
 async function getGitHub(env) {
   const user = env.GITHUB_USER || "LxghtBlvee";
 
@@ -319,36 +367,12 @@ async function getGitHub(env) {
         subtitle,
         url: repo ? `https://github.com/${repo}` : `https://github.com/${user}`,
         image:
-        type === "PushEvent"
-         ? "https://cdn-icons-png.flaticon.com/512/25/25231.png"
-         : "https://cdn-icons-png.flaticon.com/512/5968/5968866.png",
+          type === "PushEvent"
+            ? "https://cdn-icons-png.flaticon.com/512/25/25231.png"
+            : "https://cdn-icons-png.flaticon.com/512/5968/5968866.png",
         ts: Date.parse(e?.created_at) || Date.now(),
       };
     });
-async function debugLastfm(env) {
-  const apiKey = env.LASTFM_API_KEY;
-  const username = env.LASTFM_USER || "LxghtBlvee";
-
-  if (!apiKey) {
-    return { ok: false, reason: "MISSING_LASTFM_API_KEY", username };
-  }
-
-  const recentUrl =
-    `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks` +
-    `&user=${encodeURIComponent(username)}` +
-    `&api_key=${encodeURIComponent(apiKey)}` +
-    `&format=json&limit=1`;
-
-  const res = await fetch(recentUrl);
-  const text = await res.text();
-
-  return {
-    ok: res.ok,
-    status: res.status,
-    username,
-    sample: text.slice(0, 800),
-  };
-}
 
   return { items };
 }
