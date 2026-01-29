@@ -425,7 +425,7 @@ async function getRoblox(env) {
   };
 }
 
-// ---------------- GitHub ----------------
+// ---------------- GitHub -----------------
 async function getGitHub(env) {
   const user = env.GITHUB_USER || "LxghtBlvee";
 
