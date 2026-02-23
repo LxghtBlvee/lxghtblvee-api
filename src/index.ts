@@ -11,8 +11,8 @@ const env = readEnv(process.env)
 
 const app = Fastify({
   logger: {
-    level: 'info',
-  },
+    level: 'info'
+  }
 })
 
 await registerSwagger(app)
@@ -23,7 +23,7 @@ await registerHealthRoutes(app)
 const lastfm = new LastFmClient({
   apiKey: env.LASTFM_API_KEY,
   username: env.LASTFM_USERNAME,
-  cacheTtlMs: env.LASTFM_CACHE_TTL_MS,
+  cacheTtlMs: env.LASTFM_CACHE_TTL_MS
 })
 
 await registerV1Routes(app, { lastfm })
@@ -33,16 +33,16 @@ app.get(
   {
     schema: {
       tags: ['System'],
-      summary: 'Service root',
-    },
+      summary: 'Service root'
+    }
   },
   async () => {
     return {
       name: 'lxghtblvee-api',
       docs: '/docs',
-      ts: Date.now(),
+      ts: Date.now()
     }
-  },
+  }
 )
 
 app.setErrorHandler((err, _req, reply) => {
@@ -53,7 +53,7 @@ app.setErrorHandler((err, _req, reply) => {
 
   reply.status(code).send({
     ok: false,
-    error: code === 500 ? 'Internal Server Error' : String(err.message || err),
+    error: code === 500 ? 'Internal Server Error' : String((err as any).message || err)
   })
 })
 
