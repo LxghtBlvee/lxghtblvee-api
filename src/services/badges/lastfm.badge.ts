@@ -1,4 +1,4 @@
-import type { LastFmClient } from '../lastfm'
+import type { LastFmClient } from '../lastfm.js'
 
 type NowPlaying = {
   track?: string | null

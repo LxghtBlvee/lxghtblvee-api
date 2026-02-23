@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify'
-import type { LastFmClient } from '../../services/lastfm'
-import { createBadge, svgReply } from '../../services/badges/badge.util'
-import { getEstTimeLabel } from '../../services/badges/time.badge'
-import { getLastFmNowPlaying } from '../../services/badges/lastfm.badge'
+import type { LastFmClient } from '../../services/lastfm.js'
+import { createBadge, svgReply } from '../../services/badges/badge.util.js'
+import { getEstTimeLabel } from '../../services/badges/time.badge.js'
+import { getLastFmNowPlaying } from '../../services/badges/lastfm.badge.js'
 
 type BadgeOpts = {
   lastfm: LastFmClient
