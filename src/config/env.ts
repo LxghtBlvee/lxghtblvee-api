@@ -8,6 +8,8 @@ const EnvSchema = z.object({
   LASTFM_USERNAME: z.string().min(1),
 
   LASTFM_CACHE_TTL_MS: z.coerce.number().int().positive().default(3500),
+
+  DISCORD_PRESENCE_SECRET: z.string().min(1),
 })
 
 export type Env = z.infer<typeof EnvSchema>

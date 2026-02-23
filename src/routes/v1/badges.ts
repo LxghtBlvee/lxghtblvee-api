@@ -3,6 +3,7 @@ import type { LastFmClient } from '../../services/lastfm.js'
 import { createBadge, svgReply } from '../../services/badges/badge.util.js'
 import { getEstTimeLabel } from '../../services/badges/time.badge.js'
 import { getLastFmNowPlaying } from '../../services/badges/lastfm.badge.js'
+import { setDiscordPresence, getDiscordPresence, normalizeDiscordPresence } from '../../services/badges/discord.presence.js'
 
 type BadgeOpts = {
   lastfm: LastFmClient
@@ -32,8 +33,45 @@ export async function registerBadgeRoutes(app: FastifyInstance, opts: BadgeOpts)
     }
   })
 
-  // Placeholder until we wire Discord presence ingestion
   app.get('/discord', async (_req, reply) => {
-    return svgReply(reply, createBadge('Discord', 'unlinked', 'grey'))
-  })
+  const p = getDiscordPresence()
+
+  const ageMs = Date.now() - (p.updatedAt || 0)
+  const stale = !p.updatedAt || ageMs > 5 * 60 * 1000
+
+  const status = stale ? 'offline' : p.status
+
+  const label = 'Discord'
+  const message =
+    status === 'online' ? 'online' :
+    status === 'idle' ? 'idle' :
+    status === 'dnd' ? 'dnd' :
+    status === 'offline' ? 'offline' :
+    'unknown'
+
+  const color =
+    status === 'online' ? '2ea44f' :
+    status === 'idle' ? 'fbbf24' :
+    status === 'dnd' ? 'ef4444' :
+    '6b7280'
+
+  return svgReply(reply, createBadge(label, message, color))
+})
+
+app.post('/discord/update', async (req, reply) => {
+  const secret = String(process.env.DISCORD_PRESENCE_SECRET || '')
+  const got = String((req.headers['x-presence-secret'] as any) || '')
+
+  if (!secret || got !== secret) {
+    reply.status(401)
+    return { ok: false, error: 'Unauthorized' }
+  }
+
+  const body = (req.body || {}) as any
+  const status = normalizeDiscordPresence(body.status)
+
+  setDiscordPresence(status)
+
+  return { ok: true }
+})
 }
